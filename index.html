@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Controle de Processos: Provas</title>
+<style>
+  :root { --fg:#1b1b1b; --muted:#5a5a5a; --line:#c9c9c9; --bg:#fafaf8; --card:#ffffff; --acc:#1f4e8c; --err:#a12a2a; --ok:#25683a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e8e6e1; --muted:#a8a49c; --line:#4a4a4a; --bg:#1c1c1c; --card:#262626; --acc:#8fb3e8; --err:#ef8f8f; --ok:#8fd19e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font-family:"Palatino Linotype", Palatino, "Book Antiqua", "Times New Roman", serif; font-size:17px; }
+  main { max-width:520px; margin:48px auto; padding:0 16px; }
+  h1 { font-size:1.45rem; margin:0 0 4px; font-weight:normal; }
+  .sub { color:var(--muted); margin:0 0 24px; font-size:.95rem; }
+  form { background:var(--card); border:1px solid var(--line); padding:20px; }
+  label { display:block; margin:14px 0 4px; font-size:.95rem; }
+  label:first-child { margin-top:0; }
+  input, select { width:100%; font:inherit; padding:8px 10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  input:focus, select:focus { outline:2px solid var(--acc); outline-offset:0; }
+  button { margin-top:20px; width:100%; font:inherit; padding:10px; border:1px solid var(--acc);
+           background:var(--acc); color:#fff; cursor:pointer; }
+  @media (prefers-color-scheme: dark) { button { color:#111; } }
+  button:disabled { opacity:.6; cursor:wait; }
+  #msg { margin-top:16px; min-height:1.4em; }
+  .err { color:var(--err); } .ok { color:var(--ok); }
+  ol { color:var(--muted); font-size:.92rem; padding-left:20px; line-height:1.5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Controle de Processos</h1>
+  <p class="sub">Download da prova individual (DEQ/UEM)</p>
+  <form id="f" autocomplete="off">
+    <label for="exam">Prova</label>
+    <select id="exam" required></select>
+    <label for="ra">RA (em dupla, o <b>menor</b> RA)</label>
+    <input id="ra" inputmode="numeric" pattern="[0-9]{4,9}" required placeholder="ex.: 123456">
+    <label for="code">Código da prova (no quadro)</label>
+    <input id="code" required placeholder="XXXX-XXXX" style="text-transform:uppercase">
+    <button id="go" type="submit">Baixar prova</button>
+    <div id="msg" role="status"></div>
+  </form>
+  <ol>
+    <li>Abra o PDF baixado no Microsoft Edge (ou Adobe Reader).</li>
+    <li>Preencha os nomes e RAs da dupla e as respostas na folha de respostas (última página).</li>
+    <li>Salve com Ctrl+S (não use “Imprimir como PDF”) e entregue conforme as instruções.</li>
+  </ol>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const msg = (t, cls) => { $("msg").textContent = t; $("msg").className = cls || ""; };
+const normCode = c => c.toUpperCase().replace(/[^A-Z0-9]/g, "");
+const normRa = r => String(parseInt(r.replace(/\D/g, ""), 10));
+const enc = s => new TextEncoder().encode(s);
+async function sha256hex(s) {
+  const h = await crypto.subtle.digest("SHA-256", enc(s));
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+let exams = [];
+fetch("exams.json", {cache: "no-store"}).then(r => r.json()).then(list => {
+  exams = list;
+  $("exam").innerHTML = list.map((e, i) => `<option value="${i}">${e.title}</option>`).join("");
+  if (list.length) $("exam").value = String(list.length - 1);
+}).catch(() => msg("Não foi possível carregar a lista de provas.", "err"));
+
+$("f").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const ex = exams[+$("exam").value];
+  const raw = $("ra").value.trim();
+  if (!ex || !/^\d{4,9}$/.test(raw)) { msg("Confira o RA (somente números).", "err"); return; }
+  const ra = normRa(raw), code = normCode($("code").value);
+  $("go").disabled = true; msg("Baixando e decifrando…");
+  try {
+    const id = (await sha256hex(`${ex.id}|${ra}`)).slice(0, 24);
+    const r = await fetch(`${ex.id}/${id}.bin`, {cache: "no-store"});
+    if (!r.ok) throw new Error("ra");
+    const blob = new Uint8Array(await r.arrayBuffer());
+    const base = await crypto.subtle.importKey("raw", enc(code), "PBKDF2", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey(
+      {name: "PBKDF2", hash: "SHA-256", salt: enc(`p2ctrl|${ex.id}|${ra}`), iterations: ex.iter},
+      base, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
+    let pdf;
+    try { pdf = await crypto.subtle.decrypt({name: "AES-GCM", iv: blob.slice(0, 12)}, key, blob.slice(12)); }
+    catch (e) { throw new Error("code"); }
+    const url = URL.createObjectURL(new Blob([pdf], {type: "application/pdf"}));
+    const a = document.createElement("a");
+    a.href = url; a.download = `${ex.stem}_${ra}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    msg(`Prova ${ra} baixada: ${ex.stem}_${ra}.pdf`, "ok");
+  } catch (e) {
+    msg(e.message === "ra" ? "Não há prova para este RA. Confira o número ou peça uma prova reserva ao professor."
+      : e.message === "code" ? "Código incorreto." : "Erro ao baixar a prova. Tente novamente.", "err");
+  } finally { $("go").disabled = false; }
+});
+</script>
+</body>
+</html>
