@@ -33,15 +33,15 @@
 <body>
 <main>
   <h1>Controle de Processos</h1>
-  <p class="sub">Download da prova individual (DEQ/UEM)</p>
+  <p class="sub">Download da prova ou do trabalho individual (DEQ/UEM)</p>
   <form id="f" autocomplete="off">
-    <label for="exam">Prova</label>
+    <label for="exam">Avaliação</label>
     <select id="exam" required></select>
     <label for="ra">RA (em dupla, o <b>menor</b> RA)</label>
     <input id="ra" inputmode="numeric" pattern="[0-9]{4,9}" required placeholder="ex.: 123456">
-    <label for="code">Código da prova (no quadro)</label>
-    <input id="code" required placeholder="código escrito no quadro" style="text-transform:uppercase">
-    <button id="go" type="submit">Baixar prova</button>
+    <label for="code">Código (informado pelo professor)</label>
+    <input id="code" required placeholder="código informado pelo professor" style="text-transform:uppercase">
+    <button id="go" type="submit">Baixar</button>
     <div id="msg" role="status"></div>
   </form>
   <ol>
@@ -61,16 +61,46 @@ async function sha256hex(s) {
   const h = await crypto.subtle.digest("SHA-256", enc(s));
   return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
-let exams = [];
-fetch("exams.json", {cache: "no-store"}).then(r => r.json()).then(list => {
+let exams = [], skew = 0;  // skew: server clock (HTTP Date header) minus this computer's clock
+const now = () => Date.now() + skew;
+const fmtBR = ms => new Date(ms).toLocaleString("pt-BR", {timeZone: "America/Sao_Paulo", day: "2-digit",
+  month: "2-digit", hour: "2-digit", minute: "2-digit"});
+function state(e) {  // "open" | "soon" | "closed" (window in exams.json, ISO 8601 with offset)
+  const t = now();
+  if (e.open_from && t < Date.parse(e.open_from)) return "soon";
+  if (e.open_until && t > Date.parse(e.open_until)) return "closed";
+  return "open";
+}
+function label(e) {
+  const s = state(e);
+  return s === "soon" ? `${e.title} (disponível a partir de ${fmtBR(Date.parse(e.open_from))})`
+       : s === "closed" ? `${e.title} (encerrado)`
+       : e.open_until ? `${e.title} (até ${fmtBR(Date.parse(e.open_until))})` : e.title;
+}
+function render() {
+  const keep = $("exam").value;
+  $("exam").innerHTML = exams.map((e, i) =>
+    `<option value="${i}"${state(e) === "open" ? "" : " disabled"}>${label(e)}</option>`).join("");
+  const open = exams.map((e, i) => state(e) === "open" ? i : -1).filter(i => i >= 0);
+  $("exam").value = open.includes(+keep) && keep !== "" ? keep : (open.length ? String(open[open.length - 1]) : "");
+  $("go").disabled = !open.length;
+  if (!open.length) msg("Não há prova ou trabalho disponível para download neste momento.", "err");
+  else if ($("msg").textContent.startsWith("Não há prova ou")) msg("");
+}
+fetch("exams.json", {cache: "no-store"}).then(r => {
+  const d = Date.parse(r.headers.get("Date") || "");
+  if (!isNaN(d)) skew = d - Date.now();
+  return r.json();
+}).then(list => {
   exams = list;
-  $("exam").innerHTML = list.map((e, i) => `<option value="${i}">${e.title}</option>`).join("");
-  if (list.length) $("exam").value = String(list.length - 1);
+  render();
+  setInterval(render, 20000);
 }).catch(() => msg("Não foi possível carregar a lista de provas.", "err"));
 
 $("f").addEventListener("submit", async ev => {
   ev.preventDefault();
   const ex = exams[+$("exam").value];
+  if (ex && state(ex) !== "open") { render(); msg("Esta avaliação não está disponível para download agora.", "err"); return; }
   const raw = $("ra").value.trim();
   if (!ex || !/^\d{4,9}$/.test(raw)) { msg("Confira o RA (somente números).", "err"); return; }
   const ra = normRa(raw), code = normCode($("code").value);
